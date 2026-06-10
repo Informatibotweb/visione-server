@@ -13,7 +13,7 @@ TIMEOUT_WEB = 10
 USER_AGENT = "Visione/16.0 (RAG + Groq)"
 STORIA = deque(maxlen=10)
 
-# Groq
+# GROQ (più stabile di Gemini in questo momento)
 GROQ_API_KEY = os.environ.get("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")
 GROQ_MODEL = "llama-3.1-8b-instant"
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
@@ -150,7 +150,7 @@ def classifica_intento(testo):
 # ========== GENERAZIONE CON GROQ ==========
 def genera_con_groq(prompt):
     if not GROQ_API_KEY:
-        print("GROQ_API_KEY non impostata")
+        print("ERRORE: GROQ_API_KEY non impostata")
         return None
     headers = {
         "Authorization": f"Bearer {GROQ_API_KEY}",
@@ -201,7 +201,7 @@ def rispondi(domanda):
         else:
             return "Comando non riconosciuto. Usa /cerca <testo> o /stato."
 
-    # RAG: cerca nel database
+    # ========== RAG ==========
     risultati_db = db.cerca(domanda, limit=2)
     contesto_rag = ""
     if risultati_db:
@@ -210,7 +210,6 @@ def rispondi(domanda):
             snippet = contenuto[:1000] + "..." if len(contenuto) > 1000 else contenuto
             contesto_rag += f"Fonte: {titolo}\n{snippet}\n\n"
     else:
-        # Ricerca live
         wiki = ricerca.wikipedia(domanda)
         ddg = ricerca.duckduckgo(domanda)
         if wiki:
