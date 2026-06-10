@@ -15,7 +15,7 @@ USER_AGENT = "Visione/16.0 (RAG + Groq)"
 STORIA = deque(maxlen=10)
 
 # Chiave Groq (usa variabile ambiente per sicurezza)
-GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "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")
+GROQ_API_KEY = os.environ.get("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", "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")
 if not GROQ_API_KEY:
     print("⚠️ GROQ_API_KEY non trovata. Verrà usato solo RAG senza LLM.")
     client_groq = None
