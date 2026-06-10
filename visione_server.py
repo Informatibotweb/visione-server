@@ -6,7 +6,7 @@ from collections import deque
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import requests
-
+print("DEBUG: GROQ_API_KEY =", "✅ TROVATA" if os.environ.get("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") else "❌ MANCANTE")
 # ========== CONFIGURAZIONE ==========
 DB_FILE = "visione_conoscenza.db"
 TIMEOUT_WEB = 10
