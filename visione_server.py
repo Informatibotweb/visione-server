@@ -14,7 +14,7 @@ USER_AGENT = "Visione/16.0 (RAG + Groq)"
 STORIA = deque(maxlen=10)
 
 # GROQ
-GROQ_API_KEY = os.environ.get("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")
+GROQ_API_KEY = "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"  # temporanea, poi la toglieremo
 GROQ_MODEL = "llama3-8b-8192"  # Modello stabile e supportato
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 
