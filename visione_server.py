@@ -271,3 +271,11 @@ def home():
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port)
+@app.route('/test_groq')
+def test_groq():
+    from flask import jsonify
+    if not GROQ_API_KEY:
+        return jsonify({"error": "GROQ_API_KEY non impostata"})
+    prompt = "Di' solo 'Ciao, funziona!'"
+    risposta = genera_con_groq(prompt)
+    return jsonify({"api_key_set": bool(GROQ_API_KEY), "risposta": risposta})
