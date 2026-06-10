@@ -11,20 +11,13 @@ import requests
 DB_FILE = "visione_conoscenza.db"
 TIMEOUT_WEB = 10
 USER_AGENT = "Visione/16.0 (RAG + Groq)"
-STORIA = deque(maxlen=10)
+STORIA = deque(maxlen=10)  # contesto conversazione
 
 # Groq
 GROQ_API_KEY = os.environ.get("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")
-GROQ_MODEL = "llama3-8b-8192"  # o "mixtral-8x7b-32768"
+GROQ_MODEL = "llama3-8b-8192"  # oppure "mixtral-8x7b-32768"
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
-@app.route('/test_groq')
-def test_groq():
-    from flask import jsonify
-    if not GROQ_API_KEY:
-        return jsonify({"error": "GROQ_API_KEY non impostata"})
-    prompt = "Di' solo 'Ciao, funziona!'"
-    risposta = genera_con_groq(prompt)
-    return jsonify({"api_key_set": bool(GROQ_API_KEY), "risposta": risposta})
+
 # ========== DATABASE ==========
 class Database:
     def __init__(self):
@@ -69,14 +62,17 @@ class Database:
 
     def cerca(self, query, limit=3):
         q = query.lower().strip()
+        # Titolo esatto
         self.cursore.execute("SELECT titolo, contenuto FROM pagine WHERE LOWER(titolo) = ?", (q,))
         riga = self.cursore.fetchone()
         if riga:
             return [(riga[0], riga[1], 1.0)]
+        # Titolo parziale
         self.cursore.execute("SELECT titolo, contenuto FROM pagine WHERE LOWER(titolo) LIKE ? LIMIT 5", (f"%{q}%",))
         risultati = [(t, c, 0.9) for t, c in self.cursore.fetchall()]
         if risultati:
             return risultati[:limit]
+        # Full-text FTS5
         try:
             self.cursore.execute("SELECT titolo, contenuto, rank FROM pagine_fts WHERE pagine_fts MATCH ? LIMIT 10", (q,))
             candidati = []
@@ -103,7 +99,7 @@ class Database:
     def chiudi(self):
         self.conn.close()
 
-# ========== RICERCA WEB ==========
+# ========== RICERCA WEB (WIKIPEDIA + DUCKDUCKGO) ==========
 class RicercaWeb:
     def __init__(self):
         self.session = requests.Session()
@@ -141,7 +137,7 @@ class RicercaWeb:
             print(f"DuckDuckGo error: {e}")
         return None
 
-# ========== INTENTI ==========
+# ========== INTENTI (per risposte immediate) ==========
 def classifica_intento(testo):
     testo = testo.lower().strip()
     if testo in ["ciao", "buongiorno", "buonasera", "salve", "ehi", "hey"]:
@@ -154,10 +150,10 @@ def classifica_intento(testo):
         return "comando"
     return "domanda"
 
-# ========== GENERAZIONE GROQ ==========
+# ========== GENERAZIONE CON GROQ ==========
 def genera_con_groq(prompt):
     if not GROQ_API_KEY:
-        print("Groq API key mancante")
+        print("GROQ_API_KEY non impostata")
         return None
     headers = {
         "Authorization": f"Bearer {GROQ_API_KEY}",
@@ -167,16 +163,16 @@ def genera_con_groq(prompt):
         "model": GROQ_MODEL,
         "messages": [{"role": "user", "content": prompt}],
         "temperature": 0.7,
-        "max_tokens": 300
+        "max_tokens": 350
     }
     try:
         resp = requests.post(GROQ_URL, json=payload, headers=headers, timeout=30)
         if resp.status_code == 200:
             return resp.json()["choices"][0]["message"]["content"].strip()
         else:
-            print(f"Groq errore {resp.status_code}: {resp.text}")
+            print(f"Groq status {resp.status_code}: {resp.text}")
     except Exception as e:
-        print(f"Groq exception: {e}")
+        print(f"Groq eccezione: {e}")
     return None
 
 # ========== INIZIALIZZAZIONE GLOBALE ==========
@@ -186,6 +182,7 @@ ricerca = RicercaWeb()
 def rispondi(domanda):
     global STORIA
     intento = classifica_intento(domanda)
+    # Risposte immediate senza LLM
     if intento == "saluto":
         return "Ciao! Come posso aiutarti oggi?"
     if intento == "come_stai":
@@ -207,16 +204,17 @@ def rispondi(domanda):
         else:
             return "Comando non riconosciuto. Usa /cerca <testo> o /stato."
 
-    # RAG: cerca nel DB
+    # ========== RAG ==========
+    # Cerca nel database
     risultati_db = db.cerca(domanda, limit=2)
     contesto_rag = ""
     if risultati_db:
         contesto_rag = "Ecco informazioni dal mio database:\n\n"
         for titolo, contenuto, score in risultati_db:
-            snippet = contenuto[:800] + "..." if len(contenuto) > 800 else contenuto
+            snippet = contenuto[:1000] + "..." if len(contenuto) > 1000 else contenuto
             contesto_rag += f"Fonte: {titolo}\n{snippet}\n\n"
     else:
-        # Ricerca live
+        # Ricerca live su Wikipedia e DuckDuckGo
         wiki = ricerca.wikipedia(domanda)
         ddg = ricerca.duckduckgo(domanda)
         if wiki:
@@ -229,7 +227,7 @@ def rispondi(domanda):
         else:
             contesto_rag = "Non ho trovato informazioni utili.\n\n"
 
-    # Costruisci il prompt per Groq
+    # Costruzione del prompt per Groq
     prompt = f"""Sei Visione, un'assistente AI intelligente e amichevole.
 Usa le informazioni seguenti per rispondere alla domanda dell'utente.
 Se non trovi la risposta, dì semplicemente che non lo sai.
@@ -246,14 +244,14 @@ Risposta in italiano, chiara e naturale:"""
         return risposta_groq
     else:
         # Fallback: restituisci il contesto trovato
-        if contesto_rag and not contesto_rag.startswith("Non ho trovato"):
+        if contesto_rag and "Non ho trovato" not in contesto_rag:
             return f"{contesto_rag}\n\n(Generazione automatica non disponibile, ma questi dati potrebbero aiutarti.)"
         else:
             return "Mi dispiace, non ho trovato informazioni sufficienti e la generazione automatica non è disponibile. Riprova più tardi."
 
-# ========== FLASK APP ==========
+# ========== SERVER FLASK ==========
 app = Flask(__name__)
-CORS(app)
+CORS(app, resources={r"/*": {"origins": "*"}})
 
 @app.route('/chat', methods=['POST'])
 def chat():
@@ -277,12 +275,4 @@ def home():
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port)
-@app.route('/test_groq')
-def test_groq():
-    from flask import jsonify
-    if not GROQ_API_KEY:
-        return jsonify({"error": "GROQ_API_KEY non impostata"})
-    prompt = "Di' solo 'Ciao, funziona!'"
-    risposta = genera_con_groq(prompt)
-    return jsonify({"api_key_set": bool(GROQ_API_KEY), "risposta": risposta})
+    app.run(host='0.0.0.0', port=port, debug=False)
