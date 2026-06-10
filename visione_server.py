@@ -13,9 +13,9 @@ TIMEOUT_WEB = 10
 USER_AGENT = "Visione/16.0 (RAG + Groq)"
 STORIA = deque(maxlen=10)
 
-# GROQ (più stabile di Gemini in questo momento)
+# GROQ
 GROQ_API_KEY = os.environ.get("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")
-GROQ_MODEL = "llama-3.1-8b-instant"
+GROQ_MODEL = "llama3-8b-8192"  # Modello stabile e supportato
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 
 # ========== DATABASE ==========
@@ -24,6 +24,7 @@ class Database:
         self.conn = sqlite3.connect(DB_FILE, check_same_thread=False)
         self.cursore = self.conn.cursor()
         self._init_db()
+        print("Database inizializzato")
 
     def _init_db(self):
         self.cursore.execute('''
@@ -147,11 +148,12 @@ def classifica_intento(testo):
         return "comando"
     return "domanda"
 
-# ========== GENERAZIONE CON GROQ ==========
+# ========== GENERAZIONE CON GROQ (con debug) ==========
 def genera_con_groq(prompt):
     if not GROQ_API_KEY:
-        print("ERRORE: GROQ_API_KEY non impostata")
+        print("DEBUG: GROQ_API_KEY mancante")
         return None
+    print(f"DEBUG: Chiamata Groq con modello {GROQ_MODEL}")
     headers = {
         "Authorization": f"Bearer {GROQ_API_KEY}",
         "Content-Type": "application/json"
@@ -164,13 +166,14 @@ def genera_con_groq(prompt):
     }
     try:
         resp = requests.post(GROQ_URL, json=payload, headers=headers, timeout=30)
+        print(f"DEBUG: Groq risposta status {resp.status_code}")
         if resp.status_code == 200:
             data = resp.json()
             return data["choices"][0]["message"]["content"].strip()
         else:
-            print(f"Groq status {resp.status_code}: {resp.text}")
+            print(f"DEBUG: Groq errore {resp.status_code}: {resp.text}")
     except Exception as e:
-        print(f"Groq eccezione: {e}")
+        print(f"DEBUG: Groq eccezione: {e}")
     return None
 
 # ========== INIZIALIZZAZIONE GLOBALE ==========
@@ -201,7 +204,7 @@ def rispondi(domanda):
         else:
             return "Comando non riconosciuto. Usa /cerca <testo> o /stato."
 
-    # ========== RAG ==========
+    # RAG
     risultati_db = db.cerca(domanda, limit=2)
     contesto_rag = ""
     if risultati_db:
