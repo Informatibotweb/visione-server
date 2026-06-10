@@ -13,11 +13,9 @@ TIMEOUT_WEB = 10
 USER_AGENT = "Visione/16.0 (RAG + Gemini)"
 STORIA = deque(maxlen=10)
 
-# Google Gemini
+# Gemini (leggi la chiave da variabile d'ambiente)
 GEMINI_API_KEY = os.environ.get("AQ.Ab8RN6Kdm00TiQ3fFSnVeShVLI4MwcllGwzxDOwzfdyeigGaZw")
-# Il modello può essere "gemini-2.0-flash-lite" o "gemini-1.5-flash" o "gemini-pro"
-# Usiamo "gemini-1.5-flash" che è stabile e gratuito
-GEMINI_MODEL = "gemini-1.5-flash"
+GEMINI_MODEL = "gemini-2.0-flash-lite"  # o "gemini-flash-latest" come nel tuo test
 GEMINI_URL = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
 
 # ========== DATABASE ==========
@@ -154,41 +152,43 @@ def genera_con_gemini(prompt):
     if not GEMINI_API_KEY:
         print("GEMINI_API_KEY non impostata")
         return None
-    headers = {
-        'Content-Type': 'application/json',
-        'x-goog-api-key': GEMINI_API_KEY
-    }
+    url = f"{GEMINI_URL}?key={GEMINI_API_KEY}"
+    headers = {'Content-Type': 'application/json'}
     payload = {
         "contents": [{
             "parts": [{"text": prompt}]
         }]
     }
     try:
-        resp = requests.post(GEMINI_URL, json=payload, headers=headers, timeout=30)
+        resp = requests.post(url, json=payload, headers=headers, timeout=30)
         if resp.status_code == 200:
             data = resp.json()
-            # La risposta ha struttura: data["candidates"][0]["content"]["parts"][0]["text"]
-            return data["candidates"][0]["content"]["parts"][0]["text"].strip()
+            # Estrae il testo dalla risposta
+            try:
+                text = data["candidates"][0]["content"]["parts"][0]["text"].strip()
+                return text
+            except (KeyError, IndexError):
+                print(f"Formato risposta Gemini inaspettato: {data}")
+                return None
         else:
             print(f"Gemini status {resp.status_code}: {resp.text}")
     except Exception as e:
         print(f"Gemini eccezione: {e}")
     return None
 
-# ========== INIZIALIZZAZIONE ==========
+# ========== INIZIALIZZAZIONE GLOBALE ==========
 db = Database()
 ricerca = RicercaWeb()
 
 def rispondi(domanda):
     global STORIA
     intento = classifica_intento(domanda)
-    
     if intento == "saluto":
         return "Ciao! Come posso aiutarti oggi?"
     if intento == "come_stai":
         return "Sto benissimo, grazie! Sono sempre operativa."
     if intento == "identita":
-        return "Sono Visione, un'assistente IA con accesso a Wikipedia e database, potenziata da Google Gemini."
+        return "Sono Visione, un'assistente IA con accesso a Wikipedia e a un database di conoscenza, potenziata da Google Gemini."
     if intento == "comando":
         if domanda.startswith("/cerca "):
             query = domanda[7:].strip()
@@ -204,7 +204,7 @@ def rispondi(domanda):
         else:
             return "Comando non riconosciuto. Usa /cerca <testo> o /stato."
 
-    # RAG
+    # RAG: cerca nel database
     risultati_db = db.cerca(domanda, limit=2)
     contesto_rag = ""
     if risultati_db:
@@ -213,6 +213,7 @@ def rispondi(domanda):
             snippet = contenuto[:1000] + "..." if len(contenuto) > 1000 else contenuto
             contesto_rag += f"Fonte: {titolo}\n{snippet}\n\n"
     else:
+        # Ricerca live
         wiki = ricerca.wikipedia(domanda)
         ddg = ricerca.duckduckgo(domanda)
         if wiki:
@@ -225,6 +226,7 @@ def rispondi(domanda):
         else:
             contesto_rag = "Non ho trovato informazioni utili.\n\n"
 
+    # Costruisci il prompt
     prompt = f"""Sei Visione, un'assistente AI intelligente e amichevole.
 Usa le informazioni seguenti per rispondere alla domanda dell'utente.
 Se non trovi la risposta, dì semplicemente che non lo sai.
@@ -235,16 +237,18 @@ Utente: {domanda}
 
 Risposta in italiano, chiara e naturale:"""
 
+    # Chiamata a Gemini
     risposta_gemini = genera_con_gemini(prompt)
     if risposta_gemini:
         return risposta_gemini
     else:
+        # Fallback
         if contesto_rag and "Non ho trovato" not in contesto_rag:
             return f"{contesto_rag}\n\n(Generazione automatica non disponibile, ma questi dati potrebbero aiutarti.)"
         else:
             return "Mi dispiace, non ho trovato informazioni sufficienti e la generazione automatica non è disponibile. Riprova più tardi."
 
-# ========== FLASK APP ==========
+# ========== FLASK ==========
 app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": "*"}})
 
