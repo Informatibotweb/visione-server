@@ -17,7 +17,14 @@ STORIA = deque(maxlen=10)
 GROQ_API_KEY = os.environ.get("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")
 GROQ_MODEL = "llama3-8b-8192"  # o "mixtral-8x7b-32768"
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
-
+@app.route('/test_groq')
+def test_groq():
+    from flask import jsonify
+    if not GROQ_API_KEY:
+        return jsonify({"error": "GROQ_API_KEY non impostata"})
+    prompt = "Di' solo 'Ciao, funziona!'"
+    risposta = genera_con_groq(prompt)
+    return jsonify({"api_key_set": bool(GROQ_API_KEY), "risposta": risposta})
 # ========== DATABASE ==========
 class Database:
     def __init__(self):
