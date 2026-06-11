@@ -98,43 +98,76 @@ class Database:
         self.conn.close()
 
 # ========== RICERCA WEB ==========
-class RicercaWeb:
-    def __init__(self):
-        self.session = requests.Session()
-        self.session.headers.update({'User-Agent': USER_AGENT})
+# Aggiungi in fondo, prima di if __name__ == '__main__'
 
-    def wikipedia(self, query):
-        if len(query) < 3:
-            return None
-        url_api = f"https://it.wikipedia.org/w/api.php?action=query&generator=search&gsrsearch={urllib.parse.quote(query)}&gsrlimit=1&prop=extracts&exchars=1500&exintro=1&explaintext=1&format=json"
-        try:
-            resp = self.session.get(url_api, timeout=TIMEOUT_WEB)
-            data = resp.json()
-            pages = data.get("query", {}).get("pages", {})
-            for page in pages.values():
-                if "missing" not in page:
-                    titolo = page["title"]
-                    estratto = page.get("extract", "").strip()
-                    if estratto:
-                        url = f"https://it.wikipedia.org/wiki/{urllib.parse.quote(titolo)}"
-                        return estratto, titolo, url
-        except Exception as e:
-            print(f"Wikipedia error: {e}")
-        return None
+import requests
+from bs4 import BeautifulSoup  # se vuoi fare scraping, ma evita dipendenze: usa API
 
-    def duckduckgo(self, query):
-        url = f"https://lite.duckduckgo.com/lite/?q={urllib.parse.quote(query)}"
-        try:
-            resp = self.session.get(url, timeout=TIMEOUT_WEB)
-            html = resp.text
-            matches = re.findall(r'<p class="result-snippet">(.*?)</p>', html, re.DOTALL | re.IGNORECASE)
-            snippets = [re.sub('<[^<]+?>', '', m).strip() for m in matches[:2]]
-            if snippets:
-                return "\n".join(snippets)
-        except Exception as e:
-            print(f"DuckDuckGo error: {e}")
-        return None
+@app.route('/cerca_web', methods=['POST'])
+def cerca_web():
+    data = request.get_json()
+    query = data.get('query', '')
+    if not query:
+        return jsonify({'error': 'No query'}), 400
+    risultati = {}
+    # Wikipedia (API)
+    wiki_url = f"https://it.wikipedia.org/w/api.php?action=query&list=search&srsearch={urllib.parse.quote(query)}&format=json"
+    try:
+        resp = requests.get(wiki_url, timeout=5)
+        wiki_data = resp.json()
+        risultati['wikipedia'] = [{'title': r['title'], 'snippet': r['snippet']} for r in wiki_data.get('query', {}).get('search', [])[:3]]
+    except: pass
+    # DuckDuckGo (API lite)
+    ddg_url = f"https://lite.duckduckgo.com/lite/?q={urllib.parse.quote(query)}"
+    try:
+        resp = requests.get(ddg_url, timeout=5)
+        soup = BeautifulSoup(resp.text, 'html.parser')
+        snippets = soup.find_all('p', class_='result-snippet')
+        risultati['duckduckgo'] = [s.get_text() for s in snippets[:3]]
+    except: risultati['duckduckgo'] = []
+    # Internet Archive (search)
+    ia_url = f"https://archive.org/advancedsearch.php?q={urllib.parse.quote(query)}&fl%5B%5D=title&fl%5B%5D=identifier&rows=3&page=1&output=json"
+    try:
+        resp = requests.get(ia_url, timeout=5)
+        ia_data = resp.json()
+        risultati['internet_archive'] = [{'title': d['title'], 'id': d['identifier']} for d in ia_data.get('response', {}).get('docs', [])]
+    except: pass
+    # YouTube (richiede API key, la userai tu)
+    # risultati['youtube'] = []  # da implementare con API key
+    return jsonify(risultati)
 
+@app.route('/analizza_immagine', methods=['POST'])
+def analizza_immagine():
+    data = request.get_json()
+    image_base64 = data.get('image_base64', '')
+    if not image_base64:
+        return jsonify({'error': 'No image'}), 400
+    # Qui puoi usare un servizio come Google Vision API, ma per semplicità usiamo Groq? Non supporta.
+    # Forniamo un placeholder che restituisce un testo descrittivo fittizio.
+    # In realtà dovresti inviare a un LLM che supporta immagini (es. GPT-4V).
+    # Oppure usi un OCR locale (Tesseract) ma è complesso.
+    return jsonify({'description': 'Immagine ricevuta, ma l’analisi visiva non è ancora implementata. Per ora descrizione fittizia.'})
+
+@app.route('/genera_immagine', methods=['POST'])
+def genera_immagine():
+    data = request.get_json()
+    prompt = data.get('prompt', '')
+    if not prompt:
+        return jsonify({'error': 'No prompt'}), 400
+    # Usa Replicate o Stability AI. Devi avere API key. Fornisco placeholder.
+    # Esempio con Replicate (richiede chiave)
+    # replicate_api_key = os.environ.get('REPLICATE_API_KEY')
+    # ... chiamata a replicate ...
+    return jsonify({'image_url': 'https://placehold.co/600x400?text=Immagine+generata+placeholder'})
+
+@app.route('/genera_audio', methods=['POST'])
+def genera_audio():
+    data = request.get_json()
+    testo = data.get('text', '')
+    if not testo:
+        return jsonify({'error': 'No text'}), 400
+    # Usa ElevenLabs o altro. Placeholder.
+    return jsonify({'audio_url': 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3'})  # esempio
 # ========== INTENTI ==========
 def classifica_intento(testo):
     testo = testo.lower().strip()
