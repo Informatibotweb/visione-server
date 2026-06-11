@@ -6,19 +6,20 @@ from collections import deque
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import requests
-print("DEBUG: GROQ_API_KEY =", "✅ TROVATA" if os.environ.get("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") else "❌ MANCANTE")
+from bs4 import BeautifulSoup
+
 # ========== CONFIGURAZIONE ==========
 DB_FILE = "visione_conoscenza.db"
 TIMEOUT_WEB = 10
-USER_AGENT = "Visione/16.0 (RAG + Groq)"
+USER_AGENT = "Visione/18.0 (RAG + Web + Media)"
 STORIA = deque(maxlen=10)
 
-# GROQ
-GROQ_API_KEY = "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"  # temporanea, poi la toglieremo
-GROQ_MODEL = "llama3-8b-8192"  # Modello stabile e supportato
+# GROQ (non usato direttamente qui, ma tenuto per eventuali fallback)
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
+GROQ_MODEL = "llama-3.1-8b-instant"
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 
-# ========== DATABASE ==========
+# ========== DATABASE (uguale a prima) ==========
 class Database:
     def __init__(self):
         self.conn = sqlite3.connect(DB_FILE, check_same_thread=False)
@@ -97,198 +98,109 @@ class Database:
     def chiudi(self):
         self.conn.close()
 
-# ========== RICERCA WEB ==========
-# Aggiungi in fondo, prima di if __name__ == '__main__'
+# ========== RICERCA WEB (WIKIPEDIA, DDG, INTERNET ARCHIVE) ==========
+class RicercaWebAvanzata:
+    def __init__(self):
+        self.session = requests.Session()
+        self.session.headers.update({'User-Agent': USER_AGENT})
 
-import requests
-from bs4 import BeautifulSoup  # se vuoi fare scraping, ma evita dipendenze: usa API
+    def wikipedia(self, query):
+        if len(query) < 3:
+            return []
+        url_api = f"https://it.wikipedia.org/w/api.php?action=query&list=search&srsearch={urllib.parse.quote(query)}&format=json"
+        try:
+            resp = self.session.get(url_api, timeout=TIMEOUT_WEB)
+            data = resp.json()
+            results = []
+            for r in data.get('query', {}).get('search', [])[:3]:
+                results.append({
+                    'title': r['title'],
+                    'snippet': re.sub('<[^<]+?>', '', r['snippet']),
+                    'url': f"https://it.wikipedia.org/wiki/{urllib.parse.quote(r['title'])}"
+                })
+            return results
+        except Exception as e:
+            print(f"Wikipedia search error: {e}")
+            return []
+
+    def duckduckgo(self, query):
+        url = f"https://lite.duckduckgo.com/lite/?q={urllib.parse.quote(query)}"
+        try:
+            resp = self.session.get(url, timeout=TIMEOUT_WEB)
+            soup = BeautifulSoup(resp.text, 'html.parser')
+            results = []
+            for snippet in soup.find_all('p', class_='result-snippet')[:3]:
+                text = snippet.get_text(strip=True)
+                if text:
+                    results.append({'snippet': text})
+            return results
+        except Exception as e:
+            print(f"DuckDuckGo error: {e}")
+            return []
+
+    def internet_archive(self, query):
+        url = f"https://archive.org/advancedsearch.php?q={urllib.parse.quote(query)}&fl[]=title&fl[]=identifier&rows=3&page=1&output=json"
+        try:
+            resp = self.session.get(url, timeout=TIMEOUT_WEB)
+            data = resp.json()
+            results = []
+            for doc in data.get('response', {}).get('docs', []):
+                results.append({
+                    'title': doc.get('title', 'Senza titolo'),
+                    'identifier': doc.get('identifier', ''),
+                    'url': f"https://archive.org/details/{doc.get('identifier', '')}"
+                })
+            return results
+        except Exception as e:
+            print(f"Internet Archive error: {e}")
+            return []
+
+# ========== ROTTE PER RICERCA WEB, IMMAGINI, AUDIO ==========
+db = Database()
+ricerca_web = RicercaWebAvanzata()
 
 @app.route('/cerca_web', methods=['POST'])
-def cerca_web():
+def cerca_web_route():
     data = request.get_json()
     query = data.get('query', '')
     if not query:
-        return jsonify({'error': 'No query'}), 400
-    risultati = {}
-    # Wikipedia (API)
-    wiki_url = f"https://it.wikipedia.org/w/api.php?action=query&list=search&srsearch={urllib.parse.quote(query)}&format=json"
-    try:
-        resp = requests.get(wiki_url, timeout=5)
-        wiki_data = resp.json()
-        risultati['wikipedia'] = [{'title': r['title'], 'snippet': r['snippet']} for r in wiki_data.get('query', {}).get('search', [])[:3]]
-    except: pass
-    # DuckDuckGo (API lite)
-    ddg_url = f"https://lite.duckduckgo.com/lite/?q={urllib.parse.quote(query)}"
-    try:
-        resp = requests.get(ddg_url, timeout=5)
-        soup = BeautifulSoup(resp.text, 'html.parser')
-        snippets = soup.find_all('p', class_='result-snippet')
-        risultati['duckduckgo'] = [s.get_text() for s in snippets[:3]]
-    except: risultati['duckduckgo'] = []
-    # Internet Archive (search)
-    ia_url = f"https://archive.org/advancedsearch.php?q={urllib.parse.quote(query)}&fl%5B%5D=title&fl%5B%5D=identifier&rows=3&page=1&output=json"
-    try:
-        resp = requests.get(ia_url, timeout=5)
-        ia_data = resp.json()
-        risultati['internet_archive'] = [{'title': d['title'], 'id': d['identifier']} for d in ia_data.get('response', {}).get('docs', [])]
-    except: pass
-    # YouTube (richiede API key, la userai tu)
-    # risultati['youtube'] = []  # da implementare con API key
+        return jsonify({'error': 'Query mancante'}), 400
+    risultati = {
+        'wikipedia': ricerca_web.wikipedia(query),
+        'duckduckgo': ricerca_web.duckduckgo(query),
+        'internet_archive': ricerca_web.internet_archive(query)
+    }
     return jsonify(risultati)
 
 @app.route('/analizza_immagine', methods=['POST'])
 def analizza_immagine():
+    """Placeholder per analisi immagini. Qui puoi integrare un servizio come Replicate o Google Vision."""
     data = request.get_json()
     image_base64 = data.get('image_base64', '')
     if not image_base64:
-        return jsonify({'error': 'No image'}), 400
-    # Qui puoi usare un servizio come Google Vision API, ma per semplicità usiamo Groq? Non supporta.
-    # Forniamo un placeholder che restituisce un testo descrittivo fittizio.
-    # In realtà dovresti inviare a un LLM che supporta immagini (es. GPT-4V).
-    # Oppure usi un OCR locale (Tesseract) ma è complesso.
-    return jsonify({'description': 'Immagine ricevuta, ma l’analisi visiva non è ancora implementata. Per ora descrizione fittizia.'})
+        return jsonify({'error': 'Nessuna immagine'}), 400
+    # Per ora restituiamo una descrizione fittizia
+    return jsonify({'description': 'Immagine ricevuta. L\'analisi visiva non è ancora attiva. Potrai integrare API esterne.'})
 
 @app.route('/genera_immagine', methods=['POST'])
 def genera_immagine():
+    """Placeholder per generazione immagini (es. Replicate)."""
     data = request.get_json()
     prompt = data.get('prompt', '')
     if not prompt:
-        return jsonify({'error': 'No prompt'}), 400
-    # Usa Replicate o Stability AI. Devi avere API key. Fornisco placeholder.
-    # Esempio con Replicate (richiede chiave)
-    # replicate_api_key = os.environ.get('REPLICATE_API_KEY')
-    # ... chiamata a replicate ...
+        return jsonify({'error': 'Prompt mancante'}), 400
+    # Placeholder: restituisce un URL fittizio
     return jsonify({'image_url': 'https://placehold.co/600x400?text=Immagine+generata+placeholder'})
 
 @app.route('/genera_audio', methods=['POST'])
 def genera_audio():
+    """Placeholder per generazione audio (es. ElevenLabs)."""
     data = request.get_json()
     testo = data.get('text', '')
     if not testo:
-        return jsonify({'error': 'No text'}), 400
-    # Usa ElevenLabs o altro. Placeholder.
-    return jsonify({'audio_url': 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3'})  # esempio
-# ========== INTENTI ==========
-def classifica_intento(testo):
-    testo = testo.lower().strip()
-    if testo in ["ciao", "buongiorno", "buonasera", "salve", "ehi", "hey"]:
-        return "saluto"
-    if re.match(r"^(come stai|come va|tutto bene|che si dice)", testo):
-        return "come_stai"
-    if re.match(r"^(come ti chiami|chi sei|cosa sei|ti presento)", testo):
-        return "identita"
-    if testo.startswith("/"):
-        return "comando"
-    return "domanda"
-
-# ========== GENERAZIONE CON GROQ (con debug) ==========
-def genera_con_groq(prompt):
-    if not GROQ_API_KEY:
-        print("DEBUG: GROQ_API_KEY mancante")
-        return None
-    print(f"DEBUG: Chiamata Groq con modello {GROQ_MODEL}")
-    headers = {
-        "Authorization": f"Bearer {GROQ_API_KEY}",
-        "Content-Type": "application/json"
-    }
-    payload = {
-        "model": GROQ_MODEL,
-        "messages": [{"role": "user", "content": prompt}],
-        "temperature": 0.7,
-        "max_tokens": 350
-    }
-    try:
-        resp = requests.post(GROQ_URL, json=payload, headers=headers, timeout=30)
-        print(f"DEBUG: Groq risposta status {resp.status_code}")
-        if resp.status_code == 200:
-            data = resp.json()
-            return data["choices"][0]["message"]["content"].strip()
-        else:
-            print(f"DEBUG: Groq errore {resp.status_code}: {resp.text}")
-    except Exception as e:
-        print(f"DEBUG: Groq eccezione: {e}")
-    return None
-
-# ========== INIZIALIZZAZIONE GLOBALE ==========
-db = Database()
-ricerca = RicercaWeb()
-
-def rispondi(domanda):
-    global STORIA
-    intento = classifica_intento(domanda)
-    if intento == "saluto":
-        return "Ciao! Come posso aiutarti oggi?"
-    if intento == "come_stai":
-        return "Sto benissimo, grazie! Sono sempre operativa."
-    if intento == "identita":
-        return "Sono Visione, un'assistente IA con accesso a Wikipedia e a un database di conoscenza, potenziata da Groq."
-    if intento == "comando":
-        if domanda.startswith("/cerca "):
-            query = domanda[7:].strip()
-            risultati = db.cerca(query)
-            if not risultati:
-                return f"Nessun risultato nel database per '{query}'."
-            risp = f"Risultati per '{query}':\n"
-            for titolo, contenuto, score in risultati[:2]:
-                risp += f"\n📖 {titolo} (score {score:.2f})\n{contenuto[:300]}...\n"
-            return risp
-        elif domanda == "/stato":
-            return f"📊 STATO: {db.conteggio_pagine()} pagine, {db.dim_totale_mb():.1f} MB"
-        else:
-            return "Comando non riconosciuto. Usa /cerca <testo> o /stato."
-
-    # RAG
-    risultati_db = db.cerca(domanda, limit=2)
-    contesto_rag = ""
-    if risultati_db:
-        contesto_rag = "Ecco informazioni dal mio database:\n\n"
-        for titolo, contenuto, score in risultati_db:
-            snippet = contenuto[:1000] + "..." if len(contenuto) > 1000 else contenuto
-            contesto_rag += f"Fonte: {titolo}\n{snippet}\n\n"
-    else:
-        wiki = ricerca.wikipedia(domanda)
-        ddg = ricerca.duckduckgo(domanda)
-        if wiki:
-            estratto, titolo, url = wiki
-            contesto_rag = f"Informazione da Wikipedia (appena recuperata):\n{titolo}\n{estratto}\n\n"
-            db.aggiungi_pagina(titolo, url, estratto, "wikipedia_live")
-        elif ddg:
-            contesto_rag = f"Informazione da DuckDuckGo:\n{ddg}\n\n"
-            db.aggiungi_pagina(f"Ricerca: {domanda[:50]}", "", ddg, "duckduckgo_live")
-        else:
-            contesto_rag = "Non ho trovato informazioni utili.\n\n"
-
-    prompt = f"""Sei Visione, un'assistente AI intelligente e amichevole.
-Usa le informazioni seguenti per rispondere alla domanda dell'utente.
-Se non trovi la risposta, dì semplicemente che non lo sai.
-
-{contesto_rag}
-
-Utente: {domanda}
-
-Risposta in italiano, chiara e naturale:"""
-
-    risposta_groq = genera_con_groq(prompt)
-    if risposta_groq:
-        return risposta_groq
-    else:
-        if contesto_rag and "Non ho trovato" not in contesto_rag:
-            return f"{contesto_rag}\n\n(Generazione automatica non disponibile, ma questi dati potrebbero aiutarti.)"
-        else:
-            return "Mi dispiace, non ho trovato informazioni sufficienti e la generazione automatica non è disponibile. Riprova più tardi."
-
-# ========== FLASK ==========
-app = Flask(__name__)
-CORS(app, resources={r"/*": {"origins": "*"}})
-
-@app.route('/chat', methods=['POST'])
-def chat():
-    data = request.get_json()
-    messaggio = data.get('message', '')
-    if not messaggio:
-        return jsonify({'error': 'Messaggio vuoto'}), 400
-    risposta = rispondi(messaggio)
-    return jsonify({'response': risposta})
+        return jsonify({'error': 'Testo mancante'}), 400
+    # Placeholder: restituisce un URL audio di esempio
+    return jsonify({'audio_url': 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3'})
 
 @app.route('/stato', methods=['GET'])
 def stato():
@@ -297,9 +209,49 @@ def stato():
         "dimensione_mb": round(db.dim_totale_mb(), 2)
     })
 
+@app.route('/chat', methods=['POST'])
+def chat():
+    """Endpoint principale per il RAG: restituisce il contesto (database + Wikipedia live)."""
+    data = request.get_json()
+    domanda = data.get('message', '')
+    if not domanda:
+        return jsonify({'error': 'Messaggio vuoto'}), 400
+
+    # Cerca nel database
+    risultati_db = db.cerca(domanda, limit=2)
+    contesto = ""
+    if risultati_db:
+        contesto = "Ecco informazioni dal mio database:\n\n"
+        for titolo, contenuto, score in risultati_db:
+            snippet = contenuto[:800] + "..." if len(contenuto) > 800 else contenuto
+            contesto += f"Fonte: {titolo}\n{snippet}\n\n"
+    else:
+        # Fallback: cerca su Wikipedia live
+        wiki_results = ricerca_web.wikipedia(domanda)
+        if wiki_results:
+            primo = wiki_results[0]
+            # Scarica l'estratto completo della pagina (si può ottimizzare con API)
+            url_api = f"https://it.wikipedia.org/w/api.php?action=query&titles={urllib.parse.quote(primo['title'])}&prop=extracts&exintro=1&explaintext=1&format=json"
+            try:
+                resp = requests.get(url_api, timeout=TIMEOUT_WEB)
+                data = resp.json()
+                pages = data.get('query', {}).get('pages', {})
+                for page in pages.values():
+                    estratto = page.get('extract', '').strip()
+                    if estratto:
+                        contesto = f"Informazione da Wikipedia (appena recuperata):\n{page['title']}\n{estratto[:1000]}\n\n"
+                        db.aggiungi_pagina(page['title'], f"https://it.wikipedia.org/wiki/{urllib.parse.quote(page['title'])}", estratto, "wikipedia_live")
+                        break
+            except:
+                pass
+        if not contesto:
+            contesto = "Non ho trovato informazioni specifiche nel database né su Wikipedia.\n\n"
+
+    return jsonify({'response': contesto})
+
 @app.route('/')
 def home():
-    return jsonify({"status": "Visione backend attivo", "version": "16.0-groq"})
+    return jsonify({"status": "Visione backend attivo", "version": "18.0"})
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
